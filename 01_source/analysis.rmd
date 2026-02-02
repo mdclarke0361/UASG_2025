@@ -1,0 +1,1399 @@
+# Analysis of CD40 5077(T) Polymorphism (rs1883832)
+
+# Set Up
+
+Initialize R session
+```{r}
+# Remove any existing variables if using an interactive R session
+rm(list = ls())
+pdf(NULL)
+
+#
+suppressPackageStartupMessages({
+	library(here)
+	library(tidyverse)
+	library(conflicted)
+	library(limma)
+	library(gtsummary)
+	library(clusterProfiler)
+	library(org.Hs.eg.db)
+	library(enrichplot)
+	library(scales)
+	library(ggpubr)
+	# library(rstatix)
+	# library(ggfortify)
+	# library(oligo)
+})
+
+conflict_prefer_all("dplyr", quiet = TRUE)
+conflicts_prefer(base::setdiff)
+
+plot_colours <- c(
+	"#4A6990", "#A73030", "#79AF97",
+	"#DF8F44", "#6A6599", "#374E55",
+	"#B1746F", "#8A8B79", "#7AA6DC",
+	"#616530", "#642822", "#9A5324",
+	"#0B1948"
+)
+
+#
+theme_gtsummary_journal(journal = "jama")
+```
+
+Load in datasets
+```{r}
+# 
+patient_data <- read_csv(
+	file = "04_analysis/analysis_1/patient_data.csv"
+)
+
+#
+gene_expression_data <- read_csv(
+	file = "04_analysis/analysis_1/expression_data.csv"
+)
+
+```
+
+Group samples based on presence of protective allele. Note that this data set uses the dbSNP reference for REF and ALT designation. Since the hg19 ref genome contains the risk allele (which is the minor allele in this case), then REF is the risk allele.
+The genotype values 0 or 1 (TT or TC) contain the risk allele. 
+ALT is C.
+SNP is listed as T > C (dbSNP)
+
+
+```{r}
+#
+patient_data <- patient_data |>
+	#
+	mutate(
+		genotype = case_when(
+			rs1883832 == 2 ~ "CC",
+			rs1883832 == 1 ~ "TC",
+			rs1883832 == 0 ~ "TT"
+		)
+	)
+
+```
+
+Must create a unique identifier for expression data, as there are often duplicated genes and probe names. The annotation program creates duplicate rows for probes that map to more than one gene. Additionally, some genes are assigned to multiple probes.
+
+```{r}
+#
+deduplicated_expression <- gene_expression_data |>
+	mutate(
+		unique_id = paste(PROBEID, SYMBOL, sep = ":"),
+		.after = SYMBOL
+	)
+
+# Check for duplicated values
+sum(duplicated(deduplicated_expression$unique_id))
+```
+
+```{r}
+# Create expression matrix of probe IDs (rows) and samples (cols)
+exp_mat <- deduplicated_expression |>
+    select(
+        ! c(PROBEID, SYMBOL, GENENAME)
+    ) |>
+        column_to_rownames(var = "unique_id") |>
+        as.matrix()
+```
+
+# Summarize patient data
+## Patient Cohort
+Create subset for summarizing patient details
+NOTE: TO USE GTSUMMARY, make sure you remove the sample_name column from the input data. OTHERWISE, the program will hang and won't give you a reason for it.
+
+```{r}
+patient_summary_data <- patient_data |>
+	select(
+		! c(
+			sample_name,
+			ancestry,
+			subtype,
+			stroke_to_draw_hours,
+			previous_stroke,
+			mRS_0d,
+			mRS_90d,
+			dmRS_90d,
+			stroke_to_death_days,
+			rs1883832
+		)
+	)
+
+```
+
+Output summary table for patient data.
+```{r}
+# Generate the Summary Table
+patient_summary_table <- patient_summary_data |>
+  tbl_summary(
+	by = diagnosis, # Group by diagnosis
+	
+	# Define specific types for variables to ensure correct formatting
+	type = list(
+	  all_continuous() ~ "continuous",
+	  all_dichotomous() ~ "dichotomous",
+	  # Force genotype to dichotomous to allow targeting just 'TT'
+	  genotype ~ "dichotomous"
+	),
+	
+	# Target specific values for discrete/dichotomous variables
+	value = list(
+		# Only show targets as rows
+		sex ~ "male",
+		genotype ~ "TT",
+		hypertension ~ "yes",
+		diabetes ~ "yes",
+		hypercholesterolemia ~ "yes"
+	),
+	
+	# Custom Labels
+	label = list(
+	  sex ~ "Sex (Male)",
+	  genotype ~ "Genotype (TT)",
+	  age ~ "Age",
+	  hypertension ~ "Hypertension",
+	  diabetes ~ "Diabetes",
+	  hypercholesterolemia ~ "Hypercholesterolemia",
+	  wbc_count ~ "WBC Count"
+	),
+	
+	# Statistics: Mean (SD) for continuous, N (%) for discrete
+	statistic = list(
+	  all_continuous() ~ "{mean} ({sd})",
+	  all_categorical() ~ "{n} ({p})",
+	  all_dichotomous() ~ "{n} ({p})"
+	),
+	
+	# Decimal places: 1 for continuous, 0 for categorical counts/percents
+	digits = list(
+	  all_continuous() ~ 1,
+	  all_categorical() ~ 0
+	),
+	
+	missing = "no" # Exclude 'Unknown' rows
+  ) |>
+  
+  # Add the 'Total' column at the beginning
+  add_overall() |>
+  
+  # Add P-values in the final column
+  add_p() |>
+  modify_footnote(
+	# Change the explanation for the statistics columns
+	all_stat_cols() ~ "Values are Mean (SD) for continuous variables and N (%) for categorical variables."
+  ) |>
+  separate_p_footnotes() |>
+  
+  # formatting headers and bolding labels
+  modify_header(label = "**Variable**") |>
+  bold_labels()
+
+# Save the table as image
+gt::gtsave(
+	as_gt(patient_summary_table),
+	filename = "04_analysis/analysis_1/patient_summary_table.png",
+	zoom = 4,    # Increase zoom for higher resolution (default is 2)
+	expand = 20  # Control the whitespace around the table
+)
+
+```
+
+## Genotypes
+Compare patient factors with different genotypes
+```{r}
+# Generate the Summary Table
+genotype_summary_table <- patient_summary_data |>
+	tbl_summary(
+		by = genotype, # Group by genotype
+
+		# Define specific types for variables to ensure correct formatting
+		type = list(
+			all_continuous() ~ "continuous",
+			all_dichotomous() ~ "dichotomous"
+		),
+
+		# Target specific values for discrete/dichotomous variables
+		value = list(
+			# Only show targets for rows
+			diagnosis ~ "ischemic_stroke",
+			sex ~ "male",
+			hypertension ~ "yes",
+			diabetes ~ "yes",
+			hypercholesterolemia ~ "yes"
+		),
+
+		# Custom Labels
+		label = list(
+			sex ~ "Sex (Male)",
+			diagnosis ~ "Ischemic Stroke",
+			age ~ "Age",
+			hypertension ~ "Hypertension",
+			diabetes ~ "Diabetes",
+			hypercholesterolemia ~ "Hypercholesterolemia",
+			wbc_count ~ "WBC Count"
+		),
+
+		# Statistics: Mean (SD) for continuous, N (%) for discrete
+		statistic = list(
+			all_continuous() ~ "{mean} ({sd})",
+			all_categorical() ~ "{n} ({p})",
+			all_dichotomous() ~ "{n} ({p})"
+		),
+
+		# Decimal places: 1 for continuous, 0 for categorical counts/percents
+		digits = list(
+			all_continuous() ~ 1,
+			all_categorical() ~ 0
+		),
+
+		missing = "no" # Exclude 'Unknown' rows
+	) |>
+  # Add P-values in the final column
+	add_p() |>
+	modify_footnote(
+	# Change the explanation for the statistics columns
+	all_stat_cols() ~ "Values are Mean (SD) for continuous variables and N (%) for categorical variables."
+	) |>
+	separate_p_footnotes() |>
+  
+	# formatting headers and bolding labels
+	modify_header(label = "**Variable**") |>
+	bold_labels()
+
+# Save the table as image
+gt::gtsave(
+	as_gt(genotype_summary_table),
+	filename = "04_analysis/analysis_1/genotype_summary_table.png",
+	zoom = 4,    # Increase zoom for higher resolution (default is 2)
+	expand = 10  # Control the whitespace around the table
+)
+
+```
+
+# PCA Analysis of Gene Expression by Diagnosis and Genotype
+
+Calculate PCA
+```{r}
+
+# Log transform the expression matrix
+log_exp_mat <- log2(exp_mat + 1)
+
+#
+metadata_mat <- as.matrix(patient_data)
+
+# Assign sample names as row names then remove them as a column.
+rownames(metadata_mat) <- metadata_mat[, 1]
+metadata_mat <- metadata_mat[, -1]
+
+# Sort the matrix to align row names with the expression data col names
+metadata_mat <- metadata_mat[colnames(log_exp_mat), ]
+
+# Use PCAtools to calculate
+p <- PCAtools::pca(log_exp_mat, metadata_mat)
+
+```
+
+Create Plot Diagnosis
+```{r}
+shape_key <- c(
+	control = "circle",
+	ischemic_stroke = "triangle"
+)
+
+col_key <- c(
+	CC = plot_colours[3],
+	TC = plot_colours[1],
+	TT = plot_colours[2]
+)
+
+plot <- PCAtools::biplot(
+	p,
+	
+	lab = NULL,
+	colby = "genotype",
+	colkey = col_key,
+	colLegendTitle = "Patient Group",
+	shape = "diagnosis",
+	shapekey = shape_key,
+	title = "PCA Analysis of Gene Expression by Diagnosis and Genotype",
+	legendPosition = "right"
+)
+
+ggsave(
+	plot,
+	filename = "04_analysis/analysis_1/diagnosis_genotype_pca.png",
+	height = 12,
+	width = 12
+)
+```
+
+Genotype PCA plot
+```{r}
+colour_key <- c(
+	CC = plot_colours[3],
+	TC = plot_colours[1],
+	TT = plot_colours[2]
+)
+
+plot <- PCAtools::biplot(
+	p,
+	title = "PCA Analysis of Gene Expression by Genetype",
+	lab = NULL,
+	colby = "genotype",
+	colkey = colour_key,
+	colLegendTitle = "Genotype",
+	legendPosition = "right"
+)
+
+ggsave(
+	plot,
+	filename = "04_analysis/analysis_1/genotype_pca.png",
+	height = 12,
+	width = 12
+)
+```
+
+Combined Diagnosis and Genotype
+```{r}
+col_key <- c(
+	control = plot_colours[3],
+	ischemic_stroke = plot_colours[2]
+)
+
+plot <- PCAtools::biplot(
+	p,
+	title = "PCA Analysis of Gene Expression in Stroke",
+	lab = NULL,
+	colby = "diagnosis",
+	colkey = col_key,
+	colLegendTitle = "Patient Group",
+	legendPosition = "right"
+)
+
+ggsave(
+	plot,
+	filename = "04_analysis/analysis_1/diagnosis_pca.png",
+	height = 12,
+	width = 12
+)
+```
+
+# Differential Gene Expression
+## Make functions (to add descriptions)
+```{r}
+run_dge <- function(metadata) {
+
+	#
+	groups <- metadata |>
+		pull(genotype) |>
+		factor(
+			levels = c("CC", "TC", "TT")
+		)
+
+	# Filter out the same samples from expression data
+	filtered_exp_mat <- exp_mat[, metadata$sample_name]
+
+	# Create Design Matrix
+	design <- model.matrix(~ 0 + groups)
+	colnames(design) <- levels(groups)
+
+	# Create Contrast matrix for comparison between each group
+	contrast_matrix <- makeContrasts(
+		diff_TT_CC = TT - CC,
+		diff_TC_CC = TC - CC,
+		diff_TT_TC = TT - TC,
+		levels = design
+		)
+
+	# Fit Linear Model for single channel array data
+	fit <- lmFit(filtered_exp_mat, design)
+
+	# Refine Model
+	fit2 <- contrasts.fit(fit, contrast_matrix)
+	fit2 <- eBayes(fit2)
+
+	return(fit2)
+}
+```
+
+```{r}
+create_dge_table <- function(fit_data, contrast, pv_threshold, exp_change) {
+
+	# Get top results (sorted by adjusted P-value)
+	dge_results <- fit_data |>
+		topTable( 
+			coef = contrast,
+			number = Inf,
+			adjust.method = "BH"
+		)
+
+	# Make rownames into a column
+	dge_results$unique_id <- rownames(dge_results)
+
+	# Set upper/lower thresholds for fold-change
+	logfc_upper_threshold <- log2(1 + exp_change)
+	logfc_lower_threshold <- log2(1 - exp_change)
+
+	# Separate out probes and gene symbols
+	return_frame <- tibble(dge_results) |>
+		separate_wider_delim(
+			unique_id,
+			delim = ":",
+			names = c("probe_id", "gene")
+		) |>
+		# Add a column for fold-change
+		relocate(
+			gene,
+			.before = logFC
+		) |>
+		# Add value for significant up/down change in expression
+		mutate(
+			significance = case_when(
+				P.Value <= pv_threshold &
+					logFC >= logfc_upper_threshold ~ "upregulated",
+				P.Value <= pv_threshold &
+					logFC <= logfc_lower_threshold ~ "downregulated",
+				.default = "NS"
+			)
+		)
+
+	return(return_frame)
+
+}
+```
+
+```{r}
+plot_dge_volcano <- function(dge_table, title, filename, pv_threshold, exp_change) {
+
+	#
+	logfc_upper_threshold <- log2(1 + exp_change)
+	logfc_lower_threshold <- log2(1 - exp_change)
+
+	#
+	plot_data <- dge_table |>
+		mutate(
+			point_colour = case_when(
+				significance == "upregulated" ~ plot_colours[3],
+				significance == "downregulated" ~ plot_colours[2],
+				.default = "grey"
+			)
+		)
+
+	#
+	labelled_up <- plot_data |>
+		filter(
+			significance == "upregulated"
+		) |>
+		arrange(
+			P.Value
+		) |>
+		slice_head(
+			n = 50
+		)
+
+	#
+	labelled_down <- plot_data |>
+		filter(
+			significance == "downregulated"
+		) |>
+		arrange(
+			P.Value
+		) |>
+		slice_head(
+			n = 50
+		)
+
+	#
+	plot <- plot_data |>
+		ggplot(
+			aes(
+				x = logFC,
+				y = -log10(P.Value)
+			)
+		) +
+		geom_vline(
+			xintercept = c(logfc_lower_threshold, logfc_upper_threshold),
+			col = "gray",
+			linetype = "dashed"
+		) +
+		geom_hline(
+			yintercept = -log10(pv_threshold),
+			col = "red",
+			linetype = "dashed"
+		) +
+		geom_point(
+			aes(
+				colour = point_colour
+			),
+			size = 2,
+			show.legend = FALSE
+		) +
+		scale_colour_identity() +
+		ggrepel::geom_label_repel(
+			data = labelled_up,
+			aes(
+				label = gene
+			),
+			label.padding = 0.1,
+			label.size = 0.1,
+			max.overlaps = 25
+		) +
+		ggrepel::geom_label_repel(
+			data = labelled_down,
+			aes(
+				label = gene
+			),
+			label.padding = 0.1,
+			label.size = 0.1,
+			max.overlaps = 25
+		) +
+		labs(
+			title = title
+		) +
+		theme(text = element_text(size = 18))
+
+	ggsave(
+		plot,
+		width = 12,
+		height = 15,
+		create.dir = TRUE,
+		file = here("04_analysis/analysis_1", filename)
+	)
+}
+```
+
+Use functions to perform DGE and output volcano plot.
+
+## Stroke Patients
+
+What is the effect of different genotypes in stroke?
+```{r}
+# Filter out control samples.
+stroke_patient_data <- patient_data |>
+	filter(
+		diagnosis == "ischemic_stroke" 
+	)
+
+# Run the DGE
+stroke_fit_data <- run_dge(stroke_patient_data)
+
+
+# Create table of results from comparing TT - CC genotypes
+stroke_dge_TT_CC <- create_dge_table(stroke_fit_data, "diff_TT_CC", 0.05, 0.25)
+
+plot_dge_volcano(
+	stroke_dge_TT_CC,
+	"Stroke - DGE Between TT and CC in CD40 5077 Polymorphism (rs1883832)",
+	"stroke_volcano_TT_CC.png",
+	0.05,
+	0.25
+)
+
+# Create table of results from comparing TC - CC genotypes
+stroke_dge_TC_CC <- create_dge_table(stroke_fit_data, "diff_TC_CC", 0.05, 0.25)
+
+plot_dge_volcano(
+	stroke_dge_TC_CC,
+	"Stroke - DGE Between TC and CC in CD40 5077 Polymorphism (rs1883832)",
+	"stroke_volcano_TC_CC.png",
+	0.05,
+	0.25
+)
+
+# Create table of results from comparing TT - TC genotypes
+stroke_dge_TT_TC <- create_dge_table(stroke_fit_data, "diff_TT_TC", 0.05, 0.25)
+
+plot_dge_volcano(
+	stroke_dge_TT_TC,
+	"Stroke - DGE Between TT and TC in CD40 5077 Polymorphism (rs1883832)",
+	"stroke_volcano_TT_TC.png",
+	0.05,
+	0.25
+)
+```
+
+### Pathway Analysis of TT vs CC genotypes
+
+Look for duplicate values in DGE dataframe caused by multiple probes assigned to one gene.
+To handle duplicate values, sort the dataframe by Pvalue, then select only the first duplicate. This will keep only the most significant probe.
+
+Create a gene list to pass to clusterProfiler
+```{r}
+stroke_path_data <- stroke_dge_TT_CC |>
+	arrange(P.Value) |>
+	distinct(
+		gene,
+		.keep_all = TRUE
+	)
+```
+
+Use DGE Results to get a list of significant genes, then map them to ENTREZ IDs for use with pathway analysis programs.
+```{r}
+
+hs <- org.Hs.eg.db
+
+dbi <- AnnotationDbi::select(
+	hs,
+	keys = stroke_path_data$gene,
+	columns = c("ENTREZID", "SYMBOL"),
+	keytype = "SYMBOL",
+	multiVals = first
+)
+
+colnames(dbi) <- c("gene", "entrezID")
+
+stroke_path_gene_list <- stroke_path_data |>
+	# Add the entrezIDs
+	left_join(
+		dbi
+	) |>
+	# Remove any genes without entrezIDs
+	filter(
+		entrezID != "NA"
+	) |>
+	# Must be sorted by logFC for GSEA
+	arrange(
+		desc(logFC)
+	) |>
+	pull(
+		logFC,
+		name = entrezID
+	)
+
+```
+
+### GO Analysis
+Start with ORA, then add GSEA
+
+Overrepresentation analysis using GO
+```{r}
+stroke_GO_ORA <- enrichGO(
+	gene = names(stroke_path_gene_list),
+	OrgDb = "org.Hs.eg.db",
+	keyType = "ENTREZID",
+	ont = "ALL",
+	pvalueCutoff = 0.05,
+	pAdjustMethod = "BH"
+	)
+
+stroke_tbl_GO_ORA <- as_tibble(stroke_GO_ORA)
+```
+
+Gene Set Enrichment Analysis using GO
+```{r}
+stroke_GO_GSE <- gseGO(
+	geneList = stroke_path_gene_list,
+	OrgDb = "org.Hs.eg.db",
+	keyType = "ENTREZID",
+	ont = "BP",
+	pvalueCutoff = 0.05,
+	pAdjustMethod = "BH"
+)
+
+stroke_tbl_GO_GSE <- as_tibble(stroke_GO_GSE)
+
+```
+
+```{r}
+plot <- dotplot(
+	stroke_GO_GSE,
+	showCategory = 12
+	)
+
+ggsave(
+	plot,
+	filename = "04_analysis/analysis_1/stroke_gsea_dotplot.png",
+	height = 12,
+	width = 8
+)
+```
+
+```{r}
+read_stroke_GO_GSE <- setReadable(
+	stroke_GO_GSE,
+	"org.Hs.eg.db",
+	"ENTREZID"
+	)
+
+plot <- cnetplot(
+	read_stroke_GO_GSE,
+	foldChange = stroke_path_gene_list,
+	fc_threshold = 0.3
+)
+
+ggsave(
+	plot,
+	filename = "04_analysis/analysis_1/stroke_gsea_cnet_plot.png"
+)
+```
+
+### KEGG Pathway GSEA
+
+```{r}
+stroke_KEGG_ORA <- enrichKEGG(
+	names(stroke_path_gene_list),
+	pvalueCutoff = 0.05,
+	pAdjustMethod = "BH"
+)
+
+stroke_tbl_KEGG_ORA <- as_tibble(stroke_KEGG_ORA)
+```
+
+
+```{r}
+stroke_KEGG_GSE <- gseKEGG(
+	stroke_path_gene_list,
+	pvalueCutoff = 0.05,
+	pAdjustMethod = "BH"
+)
+
+stroke_tbl_KEGG_GSE <- as_tibble(stroke_KEGG_GSE)
+
+```
+
+```{r}
+plot <- dotplot(
+	stroke_KEGG_GSE,
+	showCategory = 12
+	)
+
+ggsave(
+	plot,
+	filename = "04_analysis/analysis_1/stroke_kegg_gse_dotplot.png",
+	height = 12,
+	width = 8
+)
+```
+
+```{r}
+browseKEGG(
+	stroke_KEGG_ORA,
+	pathID = 'hsa05169'
+)
+
+stroke_KEGG_GSE[stroke_KEGG_GSE$ID == 'hsa05169']
+```
+
+```{r}
+read_stroke_KEGG_GSE <- setReadable(
+	stroke_KEGG_GSE,
+	"org.Hs.eg.db",
+	"ENTREZID"
+	)
+
+tbl <- as_tibble(read_stroke_KEGG_GSE) |>
+filter(ID == "hsa05169") |>
+pull(core_enrichment) |>
+strsplit("/") |>
+unlist()
+
+# Filter the DGE result table by genes of interest
+filtered_stroke_DGE <- stroke_dge_TT_CC |>
+	filter(
+		gene %in% tbl
+	)
+
+```
+
+
+
+## Control Patients
+
+What is the effect of different genotypes in stroke?
+```{r}
+# Filter out control samples.
+control_patient_data <- patient_data |>
+	filter(
+		diagnosis == "control" 
+	)
+
+# Run the DGE
+control_fit_data <- run_dge(control_patient_data)
+
+
+# Create table of results from comparing TT - CC genotypes
+control_dge_TT_CC <- create_dge_table(control_fit_data, "diff_TT_CC", 0.05, 0.25)
+
+plot_dge_volcano(
+	control_dge_TT_CC,
+	"Control - DGE Between TT and CC in CD40 5077 Polymorphism (rs1883832)",
+	"control_volcano_TT_CC.png",
+	0.05,
+	0.25
+)
+
+# Create table of results from comparing TC - CC genotypes
+control_dge_TC_CC <- create_dge_table(control_fit_data, "diff_TC_CC", 0.05, 0.25)
+
+plot_dge_volcano(
+	control_dge_TC_CC,
+	"Control - DGE Between TC and CC in CD40 5077 Polymorphism (rs1883832)",
+	"control_volcano_TC_CC.png",
+	0.05,
+	0.25
+)
+
+# Create table of results from comparing TT - TC genotypes
+control_dge_TT_TC <- create_dge_table(control_fit_data, "diff_TT_TC", 0.05, 0.25)
+
+plot_dge_volcano(
+	control_dge_TT_TC,
+	"Control - DGE Between TT and TC in CD40 5077 Polymorphism (rs1883832)",
+	"control_volcano_TT_TC.png",
+	0.05,
+	0.25
+)
+```
+
+### Pathway Analysis of TT vs CC genotypes
+
+Look for duplicate values in DGE dataframe caused by multiple probes assigned to one gene.
+To handle duplicate values, sort the dataframe by Pvalue, then select only the first duplicate. This will keep only the most significant probe.
+
+Create a gene list to pass to clusterProfiler
+```{r}
+control_path_data <- control_dge_TT_CC |>
+	arrange(P.Value) |>
+	distinct(
+		gene,
+		.keep_all = TRUE
+	)
+```
+
+Use DGE Results to get a list of significant genes, then map them to ENTREZ IDs for use with pathway analysis programs.
+```{r}
+
+hs <- org.Hs.eg.db
+
+dbi <- AnnotationDbi::select(
+	hs,
+	keys = control_path_data$gene,
+	columns = c("ENTREZID", "SYMBOL"),
+	keytype = "SYMBOL",
+	multiVals = first
+)
+
+colnames(dbi) <- c("gene", "entrezID")
+
+control_path_gene_list <- control_path_data |>
+	# Add the entrezIDs
+	left_join(
+		dbi
+	) |>
+	# Remove any genes without entrezIDs
+	filter(
+		entrezID != "NA"
+	) |>
+	# Must be sorted by logFC for GSEA
+	arrange(
+		desc(logFC)
+	) |>
+	pull(
+		logFC,
+		name = entrezID
+	)
+
+```
+
+
+### GO Analysis
+Start with ORA, then add GSEA
+
+Overrepresenttion analysis using GO
+```{r}
+control_results_GO_ORA <- enrichGO(
+	gene = names(control_path_gene_list),
+	OrgDb = "org.Hs.eg.db",
+	keyType = "ENTREZID",
+	ont = "ALL",
+	pvalueCutoff = 0.05,
+	pAdjustMethod = "BH"
+	)
+
+control_tbl_GO_ORA <- as_tibble(control_results_GO_ORA)
+```
+
+Gene Set Enrichment Analysis using GO
+```{r}
+	
+control_results_GO_GSE <- gseGO(
+	geneList = control_path_gene_list,
+	OrgDb = "org.Hs.eg.db",
+	keyType = "ENTREZID",
+	ont = "BP",
+	pvalueCutoff = 0.05,
+	pAdjustMethod = "BH"
+)
+
+control_tbl_GO_GSE <- as_tibble(control_results_GO_GSE)
+
+```
+
+```{r}
+plot <- dotplot(
+	control_results_GO_GSE,
+	showCategory = 12
+	)
+
+ggsave(
+	plot,
+	filename = "04_analysis/analysis_1/control_gsea_dotplot.png",
+	height = 12,
+	width = 8
+)
+```
+
+```{r}
+read_control_GO_GSE <- setReadable(
+	control_results_GO_GSE,
+	"org.Hs.eg.db",
+	"ENTREZID"
+	)
+
+plot <- cnetplot(
+	read_control_GO_GSE,
+	foldChange = control_path_gene_list
+)
+
+ggsave(
+	plot,
+	filename = "04_analysis/analysis_1/control_gsea_cnet_plot.png"
+)
+```
+
+
+# Individual gene expression plots
+
+Make target gene list
+```{r}
+target_gene_list <- stroke_dge_TT_CC |>
+	filter(
+		significance != "NS"
+	)
+```
+
+Look for statistical differences between genes using Wilcoxon test between genotype groups.
+```{r}
+target_gene_expression_data <- gene_expression_data |>
+	filter(
+		SYMBOL %in% target_gene_list$gene
+	) |>
+	select(
+		! c(PROBEID, GENENAME)
+	) |>
+	distinct(
+		SYMBOL,
+		.keep_all = TRUE
+	) |>
+	pivot_longer(
+		! SYMBOL,
+		names_to = "sample_name",
+		values_to = "expression"
+	) |>
+	# pivot_wider(
+	# 	names_from = SYMBOL,
+	# 	values_from = expression
+	# ) |>
+	left_join(
+		select(
+		patient_data,
+		sample_name,
+		diagnosis,
+		genotype,
+		)
+	) |>
+	relocate(
+		diagnosis,
+		genotype,
+		.after = sample_name
+	)
+
+```
+
+```{r}
+target_genes_by_diagnosis <- target_gene_expression_data |>
+	group_by(SYMBOL) |>
+	summarize(
+		mean_control = mean(expression[diagnosis == "control"]),
+		sd_control = sd(expression[diagnosis == "control"]),
+		mean_stroke = mean(expression[diagnosis == "ischemic_stroke"]),
+		sd_stroke = sd(expression[diagnosis == "ischemic_stroke"]),
+		# Wilcoxon ranked sum (mann whitney)
+		stats = list(
+			broom::tidy(wilcox.test(expression ~ diagnosis, exact = FALSE))
+		)
+	) |>
+	unnest(stats) |>
+	mutate(
+		p.adj = p.adjust(p.value, method = "BH")
+	) |>
+	select(
+		! c(statistic, method, alternative)
+	) |>
+	arrange(
+		p.adj,
+		p.value
+	)
+
+```
+
+```{r}
+target_genes_by_genotype <- target_gene_expression_data |>
+	group_by(SYMBOL) |>
+	summarize(
+		mean_CC = mean(expression[genotype == "CC"]),
+		sd_CC = sd(expression[genotype == "CC"]),
+		mean_TC = mean(expression[genotype == "TC"]),
+		sd_TC = sd(expression[genotype == "TC"]),
+		mean_TT = mean(expression[genotype == "TT"]),
+		sd_TT = sd(expression[genotype == "TT"]),
+		# Kruskal Wallis Test
+		stats = list(
+			broom::tidy(kruskal.test(expression ~ genotype))
+		)
+	) |>
+	unnest(stats) |>
+	mutate(
+		p.adj = p.adjust(p.value, method = "BH")
+	) |>
+	select(
+		! c(statistic, method, parameter)
+	) |>
+	arrange(
+		p.adj,
+		p.value
+	)
+```
+
+
+
+```{r}
+
+# target_gene_sublist <- c("CXCL10", "IRF7", "IRF9", "OASL", "SIGLEC1") # Significant UP
+
+# target_gene_sublist <- c("ISG15", "OAS1", "IRF9", "STAT2", "RIGI") # NS UP but DE UP and trending UP
+# target_gene_sublist <- c("ISG15", "OAS1", "IRF7", "STAT2") # Not-significant (but DE)
+
+target_gene_sublist <- c("NFXL1", "BNC2") # Significant DOWN
+
+# target_gene_sublist <- c("HLA-DRB5", "HLA-C", "HLA-DRB1") # Interesting changes in HLA expression
+
+
+target_gene_expression_data <- gene_expression_data |>
+	filter(
+		SYMBOL %in% target_gene_sublist
+	) |>
+	distinct(
+		SYMBOL,
+		.keep_all = TRUE
+	) |>
+	pivot_longer(
+		starts_with("UASG"),
+		names_to = "sample_name",
+		values_to = "expression"
+	) |>
+	select(
+		! c(PROBEID, GENENAME)
+	) |>
+	# pivot_wider(
+	# 	names_from = SYMBOL,
+	# 	values_from = expression
+	# ) |>
+	left_join(
+		patient_data
+	)
+
+
+# cols <- c(
+# 	control = plot_colours[3],
+# 	ischemic_stroke = plot_colours[2]
+# )
+
+cols <- c(
+	CC = plot_colours[3],
+	TC = plot_colours[1],
+	TT = plot_colours[2]
+)
+
+plot <- target_gene_expression_data |>
+	ggplot(
+		aes(
+			x = diagnosis,
+			y = expression
+		)
+	) +
+	geom_boxplot(
+		aes(
+			fill = genotype
+		),
+		alpha = 0.5,
+		outliers = FALSE,
+		show.legend = FALSE
+	) +
+	geom_jitter(
+		aes(
+			colour = genotype
+		),
+		position = position_jitterdodge(
+			jitter.width = 0.2
+		),
+		alpha = 0.8,
+		size = 2,
+		show.legend = FALSE
+	) +
+	labs(
+		x = "",
+		y = "Expression"
+	) +
+	theme(
+		text = element_text(size = 18)
+	) +
+	stat_pwc(
+		aes(
+			group = genotype
+		),
+		method = "wilcox_test",
+		label = "p.format",
+		p.adjust.method = "BH",
+		bracket.nudge.y = 0.05
+	) +
+	scale_y_continuous(
+	    trans = scales::pseudo_log_trans(sigma = 0.001)
+	) +
+	# scale_y_log10() 
+	# +
+	scale_fill_manual(
+		values = cols
+	) +
+	scale_colour_manual(
+		values = cols
+	) +
+	facet_wrap(
+		~ SYMBOL,
+		scales = "free"
+
+	)
+
+plot
+
+
+```
+
+```{r}
+ggsave(
+	plot,
+	filename = "04_analysis/analysis_1/target_gene_boxplots_down.png",
+	height = 12,
+	width = 18
+)
+```
+
+# Linear Regression of Target Gene Expression with Age and Genotype 
+
+```{r}
+bcell_patient_data <- patient_data |>
+	#
+	mutate(
+		risk_allele = case_when(
+			genotype == "CC" ~ "no",
+			genotype == "TC" |
+				genotype == "TT" ~ "yes"
+		)
+	)
+
+target_bcell_genes <- c(
+	# "BANK1",
+	# "BCL11A",
+	# "BLNK",
+	"BTLA",
+	"CAMK4",
+	"CCR6",
+	# "CCR7",
+	# "CD27",
+	# "CD79B",
+	"CR2",
+	"CXCR5",
+	# "FCER2",
+	# "FCRL1",
+	# "FCRLA",
+	# "IGHM",
+	"MGAT5",
+	"NT5E",
+	"POU2AF1"
+	# "RASGRP3",
+	# "SPIB"
+)
+
+target_bcell_genes <- c(
+	"CR2",
+	"CCR6"
+)
+
+bcell_gene_expression_data <- gene_expression_data |>
+	filter(
+		SYMBOL %in% target_bcell_genes
+	) |>
+	distinct(
+		SYMBOL,
+		.keep_all = TRUE
+	) |>
+	pivot_longer(
+		starts_with("UASG"),
+		names_to = "sample_name",
+		values_to = "expression"
+	) |>
+	select(
+		! c(PROBEID, GENENAME)
+	) |>
+	# pivot_wider(
+	# 	names_from = SYMBOL,
+	# 	values_from = expression
+	# ) |>
+	left_join(
+		bcell_patient_data
+	)
+
+
+```
+
+```{r}
+
+bcell_genes_with_age <- bcell_gene_expression_data |>
+	group_by(SYMBOL, risk_allele) |>
+	summarize(
+		# Kruskal Wallis Test
+		stats = list(
+			broom::tidy(
+				cor.test(
+					~ expression + age,
+					method = "spearman",
+					exact = FALSE
+				)
+			)
+		)
+	) |>
+	unnest(stats) |>
+	mutate(
+		p.adj = p.adjust(p.value, method = "BH")
+	) |>
+	select(
+		! c(statistic, method, alternative)
+	) |>
+	filter(
+		risk_allele == "yes",
+		p.value <= 0.05
+	)
+
+write_csv(
+	bcell_genes_with_age,
+	file = "bcells_with_age.csv"
+
+)
+	#  |>
+	# arrange(
+	# 	p.adj,
+	# 	p.value
+	# )
+```
+
+```{r}
+# selected_bcell_genes <- c(
+# 	# "CCR6",
+# 	# "MGAT5",
+# 	# "NT5E",
+# 	# "CAMK4"
+# 	# "CR2",
+# 	# "CXCR5",
+# 	# "POU2AF1",
+# 	# "BTLA",
+# 	# "CD40"
+# )
+
+selected_bcell_genes <- target_bcell_genes
+cols <- c(
+	no = plot_colours[3],
+	# TC = plot_colours[1],
+	yes = plot_colours[2]
+)
+
+# cols <- c(
+# 	CC = plot_colours[3],
+# 	TC = plot_colours[1],
+# 	TT = plot_colours[2]
+# )
+
+
+plot_data <- bcell_gene_expression_data |>
+	filter(SYMBOL %in% selected_bcell_genes)
+
+plot <- plot_data |>
+	ggplot(
+		aes(
+			x = age,
+			y = expression,
+			colour = risk_allele
+		)
+	) +
+	geom_point(
+		size = 2
+	) +
+	geom_smooth(
+		method = "lm",
+		se = FALSE
+	) +
+	labs(
+		title = "Markers for EBV Activity in B-Cell Hosts with Age and rs1883832 Genotype",
+		y = "Expression",
+		x = "Patient Age"
+	) +
+	stat_cor(
+		method = "spearman",
+		label.x.npc = "left",
+		label.x = 0,
+		size = 5
+	) +
+		facet_wrap(
+		~ SYMBOL,
+		ncol = 1,
+		scales = "free"
+	) +
+	theme(
+		text = element_text(size = 20),
+		# legend.position = "inside",
+		legend.background = element_rect(fill = NA),
+		# legend.position.inside = c(0.8, 0.1)
+	) +
+	scale_y_continuous(
+		trans = scales::pseudo_log_trans(sigma = 0.01)
+	) +
+	scale_colour_manual(
+		values = cols
+	) +
+	guides(
+		color = guide_legend(title = "T Allele")
+	)
+
+plot
+```
+
+```{r}
+ggsave(
+	plot,
+	# height = 15,
+	# width = 15,
+	create.dir = TRUE,
+	file = "05_analysis/1_rs1883832/1c_target_genes/ebv_infection_with_age.png"
+)
+```
+
+
+# Other
+
+compare cluster
+
+Check out: 15  AI-Assisted Biological Interpretation
+
+
+Genes with age
+
