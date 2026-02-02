@@ -1,8 +1,10 @@
-# Project Name (TBD)
+# UASG 2025
 
 # 1. Set up
 
 ## Clone Repo
+
+Clone this repo to desired project directory.
 
 ## Recreate Conda Env
 
