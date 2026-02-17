@@ -57,7 +57,7 @@ target_url="https://webdata.illumina.com/downloads/productfiles/microarray-analy
 
 wget \
 	-O $dl_file \
-	$source_url
+	$target_url
 
 unzip -d  $data_ref_dir $dl_file &&
 	rm $dl_file
@@ -457,26 +457,20 @@ Rscript 01_source/annotate.r \
 	$output_dir
 ```
 
-# 4. Analysis
-
-## 4a. Analysis 1: CD40 5077(T) Polymorphism (rs1883832)
+# 4. Analysis 1: CD40 5077(T) Polymorphism (rs1883832)
 
 Export genotype data on the target SNP
 ```bash
-analysis_name="analysis_1"
-analysis_dir=04_analysis/${analysis_name}
-
-mkdir -p $analysis_dir 2> /dev/null
-
-target_snp_list="${analysis_dir}/target_snp_list.txt"
+target_snp_list="02_data/reference/target_snp_list.txt"
 processed_genotype_file="03_results/processed/genotypes_processed.bcf"
 ref_snp_list="02_data/reference/dbsnp_153common.bed"
+report_file="03_results/reports/analysis_1_snp_report.tsv"
 
 01_source/analysis/target_snp_report.sh \
-	$analysis_dir \
 	$target_snp_list \
 	$processed_genotype_file \
-	$ref_snp_list
+	$ref_snp_list \
+	$report_file
 ```
 
 Combine datasets and get a single sample set that has complete genotype, clinical, and expression data.
@@ -486,26 +480,14 @@ This assumes that the clinical data is a complete list of the samples to be stud
 clinical_data_file="02_data/metadata/clinical_data.csv"
 genotype_report_file="04_analysis/analysis_1/target_snp_report.tsv"
 expression_data_file="03_results/processing_rna/annotated_expression_data.rds"
-output_dir="04_analysis/analysis_1"
 
 Rscript 01_source/analysis/combine_datasets.r \
 	$clinical_data_file \
 	$genotype_report_file \
 	$expression_data_file \
-	$output_dir
 ```
 
 Analysis is being completed in an interactive terminal and documented in an .rmd file:
-
-
-
-
-
-
-----------
-
-
-
 
 ## 4b. Export SNP Data on Target SNPs
 

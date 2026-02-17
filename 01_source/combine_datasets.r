@@ -1,7 +1,5 @@
 #
 rm(list=ls())
-
-#
 pdf(NULL)
 
 #
@@ -14,12 +12,20 @@ suppressPackageStartupMessages({
 conflict_prefer_all("dplyr", quiet = TRUE)
 conflicts_prefer(base::setdiff)
 
+# Initialize the R env, get path variables for output.
+source("01_source/initialize_script.r")
+
+# Get logfile name
+log_file <- assign_log_filename()
+
+# Redirect output to the file and also keep it on the console
+sink(file = log_file, split = TRUE)
+
 # Read arguments
 args <- commandArgs(trailingOnly = TRUE)
 clinical_data_file <- here(args[1])
 genotype_report_file <- here(args[2])
 expression_data_file <- here(args[3])
-output_dir <- here(args[4])
 
 # Read in data
 clinical_data <- read_csv(
@@ -98,28 +104,16 @@ clinical_genotype_combined <- clinical_data_filtered |>
         genotype_data_pivoted
     )
 
-## Depricated: Do not pivot the expression data.
-# expression_data_pivoted <- expression_data_filtered |>
-#     pivot_longer(
-#         all_of(sample_list),
-#         names_to = "sample_name",
-#         values_to = "expression"
-#     ) |>
-#     relocate(
-#         sample_name,
-#         symbol = SYMBOL,
-#         expression,
-#         gene_name = GENENAME,
-#         probe_id = PROBEID
-#     )
-
 # Save results as csv files
 write_csv(
     clinical_genotype_combined,
-    file = here(output_dir, "patient_data.csv")
+    file = here(processed_data_dir, "patient_data.csv")
 )
 
 write_csv(
     expression_data_filtered,
-    file = here(output_dir, "expression_data.csv")
+    file = here(processed_data_dir, "expression_data.csv")
 )
+
+# Stop redirecting output
+sink()

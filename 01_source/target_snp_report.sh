@@ -2,45 +2,20 @@
 
 # Generate Genotype Report for Target SNPs
 
-# Set up of text colors for terminal output.
-# Text Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-NC='\033[0m' # Reset to default
-
-# Get path for project directory
-script_dir=$(dirname $0)
-source_dir=$(dirname $script_dir)
-project_dir=$(dirname $source_dir)
+# Source initialization script
+source 01_source/initialize_script.sh
 
 # Read in arguments
-# Get required files from project subdirectories.
-analysis_dir=${1}
-target_snp_list=${2}
-processed_genotype_file=${project_dir}/${3}
-ref_snp_list=${project_dir}/${4}
-
-# Create directories for output
-# Log files
-log_file_dir=${analysis_dir}/log_files
-mkdir -p $log_file_dir 2> /dev/null
-
-log_file=${log_file_dir}/target_snp_report.log
-
-# Output files
-output_file=${analysis_dir}/target_snp_report.tsv
-
-# Get the number of available CPU cores and calculate 80% of that number for threading.
-core_total="$(nproc --all)"
-threads=$(echo "${core_total}*0.8" | bc -l)
-threads=${threads%.*}
+target_snp_list=${1}
+processed_genotype_file=${project_dir}/${2}
+ref_snp_list=${project_dir}/${3}
+report_file=${project_dir}/${4}
 
 # Create report, extract header 
 bcftools view \
 	-h $processed_genotype_file |
 	tail -n 1 \
-	> ${output_file}
+	> ${report_file}
 
 # Begin counting any unrecognized snp IDs from target list
 not_found=0
@@ -117,7 +92,7 @@ while read -r line; do
 			bcftools view \
 			-H |
 			sed "s/$rsID/$ref_ID/g" \
-			>> ${output_file}
+			>> ${report_file}
 	
 	else
 	
@@ -154,9 +129,9 @@ if [[ $not_found -gt 0 ]]; then
 fi
 
 # Report to stdout the output file name and path.
-echo -e "${GREEN}Target SNP report complete... Output file is located at : ${YELLOW}$output_file${NC}" \
+echo -e "${GREEN}Target SNP report complete... Output file is located at : ${YELLOW}$report_file${NC}" \
 	| tee -a $log_file
 
 # Call R script to clean the data.
 Rscript ${script_dir}/clean_report.r \
-	$output_file
+	$report_file
