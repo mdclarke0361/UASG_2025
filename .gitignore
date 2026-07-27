@@ -1,0 +1,11 @@
+# Ignore everything
+*
+
+# # Include the following:
+!source/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!results/.gitkeep
+!.gitignore
+!README.md
+!environment.yml
