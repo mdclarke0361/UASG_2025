@@ -1,11 +1,13 @@
-# Ignore everything
-*
+# Ignore everything inside these folders
+data/raw/*
+data/processed/*
+results/*
 
-# # Include the following:
-!source/*
+# Include the following:
+!.gitignore
+!README.md
+!.devcontainer
+!environment.yml
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !results/.gitkeep
-!.gitignore
-!README.md
-!environment.yml

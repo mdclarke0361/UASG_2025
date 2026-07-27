@@ -1,0 +1,35 @@
+{
+  "name": "CPHI_2026",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  // Mount data from server into appropriate workspace directories
+  "mounts": [
+    "source=${localEnv:HOME}/jicklingServer/CPHI/raw_data/fastq_files,target=/workspace/2_data/raw_data/fastq_files,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/jicklingServer/CPHI/processed_data/small_variants/vcf_files,target=/workspace/2_data/raw_data/vcf_files,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/jicklingServer/CPHI/processed_data/cram_files,target=/workspace/2_data/raw_data/cram_files,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/jicklingServer/CPHI/processed_data/small_variants/annotated_json_files,target=/workspace/2_data/raw_data/annotated_json_files,type=bind,consistency=cached"
+  ],
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "r.rterm.linux": "/usr/local/bin/radian",
+        "r.alwaysUseActiveTerminal": true,
+        "r.sessionWatcher": true,
+        "r.plot.useHttpgd": true,
+        "r.bracketedPaste": true
+      },
+      "extensions": [
+        "REditorSupport.r",
+        "REditorSupport.r-syntax",
+        "mads-hartmann.bash-ide-vscode",
+        "timonwong.shellcheck",
+        "mkhl.shfmt",
+        "quarto.quarto",
+        "RDebugger.r-debugger"
+      ]
+    }
+  }
+}
