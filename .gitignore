@@ -2,6 +2,7 @@
 data/raw/*
 data/processed/*
 results/*
+.devcontainer/devcontainer.json
 
 # Include the following:
 !.gitignore
